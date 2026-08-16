@@ -1,0 +1,6 @@
+{
+  "name": "HireAi - Interview AI Agent",
+  "description": "An AI-powered technical assessment platform that dynamically evaluates candidates and generates comprehensive interviewer reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
