@@ -1,0 +1,475 @@
+import React, { useState } from 'react';
+import { RoleQuestionPool, AssessmentType } from '../types';
+import {
+  Sparkles,
+  X,
+  Loader2,
+  AlertCircle,
+  HelpCircle,
+  FileText,
+  CheckSquare,
+  RefreshCw,
+  CheckCircle2,
+  Zap,
+} from 'lucide-react';
+
+interface PoolGeneratorModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onPoolCreated: (pool: RoleQuestionPool) => void;
+}
+
+interface CascadeStatus {
+  status: 'idle' | 'trying' | 'switching' | 'success' | 'failed';
+  model?: string;
+  modelLabel?: string;
+  tier?: string;
+  message?: string;
+  attempt?: number;
+  totalModels?: number;
+}
+
+export const PoolGeneratorModal: React.FC<PoolGeneratorModalProps> = ({
+  isOpen,
+  onClose,
+  onPoolCreated,
+}) => {
+  const [roleName, setRoleName] = useState('');
+  const [experienceLevel, setExperienceLevel] = useState('Senior');
+  const [customFocus, setCustomFocus] = useState('');
+  const [assessmentType, setAssessmentType] = useState<AssessmentType>('descriptive');
+  const [questionCount, setQuestionCount] = useState<number>(100);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [cascadeStatus, setCascadeStatus] = useState<CascadeStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
+
+  const handleGenerate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roleName.trim()) {
+      setError('Please enter a role title (e.g. AI Systems Engineer).');
+      return;
+    }
+
+    setIsGenerating(true);
+    setError(null);
+    setCascadeStatus({
+      status: 'trying',
+      model: 'gemini-3.8-flash',
+      modelLabel: 'Gemini 3.8 Flash',
+      tier: 'Primary Fast',
+      message: 'Connecting to Gemini 3.8 Flash (Primary Fast)...',
+      attempt: 1,
+      totalModels: 5,
+    });
+
+    try {
+      const res = await fetch('/api/question-bank/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          roleName: roleName.trim(),
+          experienceLevel,
+          customFocus: customFocus.trim(),
+          questionCount,
+          assessmentType,
+          stream: true,
+        }),
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+
+      if (contentType.includes('text/event-stream') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let receivedPool: RoleQuestionPool | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'status') {
+                setCascadeStatus({
+                  status: data.status,
+                  model: data.model,
+                  modelLabel: data.modelLabel,
+                  tier: data.tier,
+                  message: data.message,
+                  attempt: data.attempt,
+                  totalModels: data.totalModels || 5,
+                });
+              } else if (data.type === 'complete') {
+                receivedPool = data.pool;
+                setCascadeStatus({
+                  status: 'success',
+                  model: data.modelUsed,
+                  modelLabel: data.modelLabel || data.modelUsed,
+                  message: `Successfully generated ${data.pool?.questions?.length || questionCount} questions!`,
+                  attempt: 1,
+                });
+              } else if (data.type === 'error') {
+                throw new Error(data.error || 'Generation failed');
+              }
+            } catch (err: any) {
+              if (err.message && err.message !== 'Generation failed') {
+                throw err;
+              }
+            }
+          }
+        }
+
+        if (receivedPool) {
+          await new Promise((r) => setTimeout(r, 450));
+          onPoolCreated(receivedPool);
+          onClose();
+          setRoleName('');
+          setCustomFocus('');
+          setCascadeStatus(null);
+          return;
+        } else {
+          throw new Error('No question pool was received from the server.');
+        }
+      } else {
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error || 'Failed to generate question bank from server.');
+        }
+
+        const pool: RoleQuestionPool = await res.json();
+        onPoolCreated(pool);
+        onClose();
+        setRoleName('');
+        setCustomFocus('');
+        setCascadeStatus(null);
+      }
+    } catch (err: any) {
+      console.error(err);
+      let msg = err.message || 'Error communicating with AI server.';
+      if (msg.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(msg);
+          if (parsed.error?.message) {
+            msg = parsed.error.message;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('rate limit')) {
+        msg = 'AI rate limit reached (429). Please wait ~15-30 seconds and try again, or select one of the existing question banks on the main screen.';
+      }
+      setError(msg);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
+      <div className="bg-[#0F0F12] border border-white/10 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl text-slate-100">
+        {/* Modal Header */}
+        <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between bg-white/5">
+          <div className="flex items-center space-x-2">
+            <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-white">Generate Role Question Pool</h3>
+              <p className="text-[11px] font-mono text-slate-400">Step 1 — One-time setup via AI</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={isGenerating}
+            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors disabled:opacity-50"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Body / Form */}
+        <form onSubmit={handleGenerate} className="p-6 space-y-4">
+          {error && (
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-start space-x-2.5">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+              Target Role Title <span className="text-rose-400">*</span>
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Senior Frontend Engineer, Cloud Architect, AI Product Manager"
+              value={roleName}
+              onChange={(e) => setRoleName(e.target.value)}
+              disabled={isGenerating}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-600 text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all disabled:opacity-50"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+              Target Experience Level
+            </label>
+            <select
+              value={experienceLevel}
+              onChange={(e) => setExperienceLevel(e.target.value)}
+              disabled={isGenerating}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#0F0F12] border border-white/10 text-white text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all disabled:opacity-50"
+            >
+              <option value="Junior">Junior (0-2 years)</option>
+              <option value="Mid-Level">Mid-Level (2-5 years)</option>
+              <option value="Senior">Senior (5-8 years)</option>
+              <option value="Lead / Principal">Lead / Principal (8+ years)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+              Assessment Type <span className="text-rose-400">*</span>
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setAssessmentType('descriptive')}
+                disabled={isGenerating}
+                className={`py-3 px-4 rounded-xl border text-xs font-semibold transition-all flex items-center space-x-2.5 ${
+                  assessmentType === 'descriptive'
+                    ? 'bg-indigo-600/30 border-indigo-500 text-white shadow-md ring-1 ring-indigo-500/50'
+                    : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                <div className={`p-1.5 rounded-lg ${assessmentType === 'descriptive' ? 'bg-indigo-500/30 text-indigo-300' : 'bg-white/5 text-slate-400'}`}>
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <div className="font-bold text-white">Descriptive</div>
+                  <div className="text-[10px] text-slate-400 font-normal">Open-ended answers & AI evaluation</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAssessmentType('mcq')}
+                disabled={isGenerating}
+                className={`py-3 px-4 rounded-xl border text-xs font-semibold transition-all flex items-center space-x-2.5 ${
+                  assessmentType === 'mcq'
+                    ? 'bg-indigo-600/30 border-indigo-500 text-white shadow-md ring-1 ring-indigo-500/50'
+                    : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                <div className={`p-1.5 rounded-lg ${assessmentType === 'mcq' ? 'bg-indigo-500/30 text-indigo-300' : 'bg-white/5 text-slate-400'}`}>
+                  <CheckSquare className="w-4 h-4" />
+                </div>
+                <div className="text-left">
+                  <div className="font-bold text-white">MCQ</div>
+                  <div className="text-[10px] text-slate-400 font-normal">4 options per question & single report</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+              Special Tech Focus or Key Requirements (Optional)
+            </label>
+            <textarea
+              rows={2}
+              placeholder="e.g. Focus heavily on React 19, GraphQL, Micro-frontends, high-concurrency systems, or distributed security"
+              value={customFocus}
+              onChange={(e) => setCustomFocus(e.target.value)}
+              disabled={isGenerating}
+              className="w-full px-3.5 py-2 rounded-xl bg-white/5 border border-white/10 text-white placeholder-slate-600 text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all disabled:opacity-50 resize-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">
+              Questions to Generate in Pool
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {[20, 50, 100].map((count) => (
+                <button
+                  key={count}
+                  type="button"
+                  onClick={() => setQuestionCount(count)}
+                  disabled={isGenerating}
+                  className={`py-2 px-3 rounded-xl border text-xs font-mono font-semibold transition-all flex flex-col items-center justify-center ${
+                    questionCount === count
+                      ? 'bg-indigo-600/30 border-indigo-500 text-white shadow-md shadow-indigo-950/50 ring-1 ring-indigo-500/50'
+                      : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10'
+                  }`}
+                >
+                  <span className="text-xs font-bold text-white">{count} Questions</span>
+                  <span className="text-[9px] uppercase tracking-wider text-slate-400">
+                    {count === 20 ? 'Express' : count === 50 ? 'Standard' : 'Complete 100 Pool'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white/5 p-3.5 rounded-xl border border-white/5 text-xs text-slate-400 space-y-1">
+            <div className="flex items-center space-x-1.5 text-indigo-400 font-bold uppercase tracking-wider text-[10px]">
+              <HelpCircle className="w-3.5 h-3.5" />
+              <span>What happens next?</span>
+            </div>
+            <p className="text-slate-300 text-xs leading-relaxed">
+              {assessmentType === 'mcq'
+                ? `AI engine will generate a bank of ${questionCount} MCQ questions (4 options A/B/C/D each, categorized across Basic, Domain, Trends, and Situational) with correct answers.`
+                : `AI engine will generate a bank of ${questionCount} descriptive questions (Basic, Domain, Trends, Situational) split across Easy, Medium, and Hard tiers with evaluation criteria.`}
+            </p>
+          </div>
+
+          {/* Real-time Multi-Model Cascade Thinking / Failover Status Indicator */}
+          {isGenerating && (
+            <div
+              className={`p-3.5 rounded-xl border text-xs transition-all duration-300 shadow-lg ${
+                cascadeStatus?.status === 'switching'
+                  ? 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                  : cascadeStatus?.status === 'success'
+                  ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                  : 'bg-indigo-950/40 border-indigo-500/30 text-indigo-200'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center space-x-2 min-w-0">
+                  {cascadeStatus?.status === 'switching' ? (
+                    <RefreshCw className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
+                  ) : cascadeStatus?.status === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <Zap className="w-4 h-4 text-indigo-400 animate-pulse shrink-0" />
+                  )}
+                  <span className="font-semibold text-xs tracking-wide text-white truncate">
+                    {cascadeStatus?.status === 'switching'
+                      ? 'High Demand: Auto-Switching'
+                      : cascadeStatus?.status === 'success'
+                      ? 'Generation Complete'
+                      : 'Smart AI Routing'}
+                  </span>
+                </div>
+
+                {cascadeStatus?.modelLabel && (
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded font-medium shrink-0 border ${
+                      cascadeStatus.status === 'switching'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                        : cascadeStatus?.status === 'success'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                        : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
+                    }`}
+                  >
+                    {cascadeStatus.modelLabel}
+                  </span>
+                )}
+              </div>
+
+              {/* Dynamic thinking message */}
+              <p
+                className={`text-xs leading-relaxed font-medium transition-colors ${
+                  cascadeStatus?.status === 'switching'
+                    ? 'text-amber-200 animate-pulse'
+                    : cascadeStatus?.status === 'success'
+                    ? 'text-emerald-300'
+                    : 'text-slate-300'
+                }`}
+              >
+                {cascadeStatus?.message || `Generating ${questionCount} questions with Gemini AI...`}
+              </p>
+
+              {/* Cascade queue models pipeline */}
+              <div className="mt-2.5 pt-2 border-t border-white/10 flex flex-wrap items-center gap-1.5 text-[10px]">
+                <span className="text-slate-400 text-[9px] uppercase tracking-wider font-semibold mr-1">
+                  Model Chain:
+                </span>
+                {[
+                  { id: 'gemini-3.8-flash', name: '3.8 Flash' },
+                  { id: 'gemini-flash-latest', name: 'Flash Latest' },
+                  { id: 'gemini-3.1-pro-preview', name: '3.1 Pro' },
+                  { id: 'gemini-3.6-flash', name: '3.6 Flash' },
+                  { id: 'gemini-3.1-flash-lite', name: 'Flash Lite' },
+                ].map((m, idx) => {
+                  const currentAttempt = cascadeStatus?.attempt || 1;
+                  const isCurrent = cascadeStatus?.model === m.id || idx === currentAttempt - 1;
+                  const isPast = idx < currentAttempt - 1;
+
+                  return (
+                    <span
+                      key={m.id}
+                      className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-all ${
+                        isCurrent
+                          ? cascadeStatus?.status === 'switching'
+                            ? 'bg-amber-500/30 text-amber-300 border border-amber-500/50 shadow-sm'
+                            : cascadeStatus?.status === 'success'
+                            ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50'
+                            : 'bg-indigo-500/30 text-indigo-300 border border-indigo-500/50 ring-1 ring-indigo-400/40 animate-pulse'
+                          : isPast
+                          ? 'bg-white/5 text-slate-500 line-through opacity-50'
+                          : 'bg-white/5 text-slate-400 border border-transparent'
+                      }`}
+                    >
+                      {m.name}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Buttons */}
+          <div className="pt-2 flex items-center justify-end space-x-3">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isGenerating}
+              className="px-4 py-2.5 rounded-xl border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 text-xs font-semibold transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isGenerating || !roleName.trim()}
+              className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isGenerating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  <span>
+                    {cascadeStatus?.status === 'switching'
+                      ? 'Switching model...'
+                      : cascadeStatus?.status === 'success'
+                      ? 'Finalizing pool...'
+                      : `Generating ${questionCount} Questions...`}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>Generate Question Bank</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
