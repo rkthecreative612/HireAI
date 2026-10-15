@@ -1,0 +1,72 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    background-color: #0A0A0B;
+    color: #e2e8f0;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  html.light body {
+    background-color: #F8FAFC;
+    color: #1E293B;
+  }
+
+  html.dark body {
+    background-color: #0A0A0B;
+    color: #e2e8f0;
+  }
+
+  .font-serif-italic {
+    font-family: 'Newsreader', serif;
+    font-style: italic;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* View Transition API Circular Expand Animation */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 999999;
+}
+
+/* Smooth Circular Ripple Overlay Keyframes (Universal Fallback) */
+@keyframes theme-circular-ripple-overlay {
+  0% {
+    width: 0px;
+    height: 0px;
+    opacity: 0.95;
+  }
+  100% {
+    width: 350vmax;
+    height: 350vmax;
+    opacity: 1;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+}
+
